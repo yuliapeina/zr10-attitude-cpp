@@ -29,7 +29,7 @@
 
 namespace {
 
-constexpr const char* VERSION = "0.3.0";
+constexpr const char* VERSION = "0.3.1";
 constexpr const char* MESSAGE_TYPE = "GIMBAL_DEVICE_ATTITUDE_STATUS";
 constexpr int MESSAGE_ID = 285;
 constexpr double LOOP_SLEEP_S = 0.05;  // як у plugin.py
@@ -109,8 +109,8 @@ int main(int argc, char** argv) {
                               : s.yaw_style == "arrow" ? zr10::YawStyle::Arrow
                               : s.yaw_style == "arrow_base" ? zr10::YawStyle::ArrowBase
                               : s.yaw_style == "triangle" ? zr10::YawStyle::Triangle
-                              : s.yaw_style == "sector" ? zr10::YawStyle::Sector
-                                                       : zr10::YawStyle::Fan;  // 2026-10-29
+                              : s.yaw_style == "fan"   ? zr10::YawStyle::Fan
+                                                       : zr10::YawStyle::Sector;  // 0.3.1
     draw_settings.panel = s.panel;  // плашка, 2026-10-28
     draw_settings.panel_alpha = static_cast<int>(s.panel_alpha);
     draw_settings.panel_w = s.panel_w;

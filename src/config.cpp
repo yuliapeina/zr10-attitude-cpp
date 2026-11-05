@@ -423,11 +423,11 @@ PluginSettings settings_from_config(const Config& cfg) {
 
     s.python_compat = cfg.get_bool("PYTHON_COMPAT", false);
     {
-        std::string style = strip_lower(cfg.get_string("YAW_STYLE", "fan"));
+        std::string style = strip_lower(cfg.get_string("YAW_STYLE", "sector"));
         s.yaw_style = (style == "line" || style == "arrow" || style == "arrow_base" ||
-                       style == "triangle" || style == "sector")
+                       style == "triangle" || style == "fan")
                           ? style
-                          : "fan";  // невідоме → "fan"
+                          : "sector";  // 0.3.1: немає або невідоме → "sector"
     }
     s.panel = cfg.get_bool("PANEL", true);
     s.panel_alpha = std::min(255LL, std::max(0LL, cfg.get_int("PANEL_ALPHA", 115)));
