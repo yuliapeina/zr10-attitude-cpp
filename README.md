@@ -1,4 +1,4 @@
-# zr10-attitude 0.3.0 — плагін R2D2 для гімбала SIYI ZR10
+# zr10-attitude 0.3.1 — плагін R2D2 для гімбала SIYI ZR10
 
 Нативний плагін для камери SSC30KQ (OpenIPC, R2D2, armv7l / SigmaStar I6E, без Docker).
 Читає MAVLink 285 `GIMBAL_DEVICE_ATTITUDE_STATUS` з `udpout:127.0.0.1:14550`
@@ -37,3 +37,7 @@ zr10-attitude [шлях/до/config.json]
 ```
 Без аргументу шукає `config.json` поруч із програмою, потім `/app/config.json`.
 SIGTERM / SIGINT — прибирає свої елементи OSD і виходить з кодом 0.
+
+Без config.json (або без ключа `YAW_STYLE`) напрямок малюється зафарбованим віялом
+`sector` (з 0.3.1; раніше було `fan`). Інші стилі: `fan`, `line`, `arrow`,
+`arrow_base`, `triangle`.
