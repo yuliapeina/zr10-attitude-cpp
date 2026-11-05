@@ -61,11 +61,12 @@ struct PluginSettings {
     // Лише для перевірки: поводитися точно як Python-версія (старий yaw без
     // виправлення -90°, без округлення, без оптимізації OSD, лог на кожне 285).
     bool python_compat = false;     // PYTHON_COMPAT
-    // YAW_STYLE: "fan" — віяло (за замовч., 2026-10-29), "line" — одна лінія,
+    // YAW_STYLE: "sector" — зафарбоване віяло (за замовч., 0.3.1), "fan" — віяло
+    // з двох променів, "line" — одна лінія,
     // "arrow" — стрілка, що обертається навколо вістря, "arrow_base" — стрілка
     // з нерухомою основою (вістря рухається), "triangle" — замкнений трикутник,
     // "sector" — зафарбоване віяло з ліній.
-    std::string yaw_style = "fan";
+    std::string yaw_style = "sector";
     // Плашка під текстом і літачком (2026-10-28):
     bool panel = true;          // PANEL
     long long panel_alpha = 115;  // PANEL_ALPHA 0…255 (115 ≈ 45% непрозорості)
