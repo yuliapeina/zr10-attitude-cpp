@@ -1,24 +1,6 @@
 {
   "CONNECT": "udpout:127.0.0.1:14550",
   "GIMBAL_ID": 1,
-  "DRAW": true,
-  "X": 0.03,
-  "Y": 0.04,
-  "DY": 0.05,
-  "SIZE": 0.03,
-  "YAW_WIDGET_X": 0.16,
-  "YAW_WIDGET_Y": 0.43,
-  "YAW_WIDGET_SCALE": 1.0,
-  "REQUEST_RATE_HZ": 0,
-  "OSD_ONLY_CHANGES": true,
-  "OSD_RESEND_S": 5.0,
-  "LOG_INTERVAL_S": 1.0,
-  "YAW_STYLE": "sector",
-  "PANEL": true,
-  "PANEL_ALPHA": 115,
-  "PANEL_W": 0.24,
-  "PANEL_POS": "bottom_right",
-  "PANEL_IMAGE": "ui-tile",
-  "PLANE_IMAGE": "airplane",
-  "PYTHON_COMPAT": false
+  "CAM": 0,
+  "SIYI_IP": "192.168.144.25"
 }

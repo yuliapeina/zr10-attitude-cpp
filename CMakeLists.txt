@@ -1,17 +1,19 @@
-# zr10-attitude 0.3.0 — плагін R2D2 для гімбала SIYI ZR10 (OSD кутів гімбала).
+# zr10-attitude 0.3.8 — плагін R2D2 для гімбала SIYI ZR10 (OSD кутів гімбала).
 # Збирає ОДНУ програму: zr10-attitude (статичний бінарник для камери).
 #
 # Залежність: заголовки MAVLink c_library_v2, commit
 #   6a7760569ce6d46c56f93163703543d4345e940a (діалект ardupilotmega).
-# За замовчуванням CMake сам завантажує їх з GitHub (FetchContent).
-# Якщо вони вже є локально:  -DMAVLINK_DIR=/шлях/до/c_library_v2
+# Де CMake їх бере (по черзі):
+#   1) -DMAVLINK_DIR=/шлях/до/c_library_v2 — якщо задано;
+#   2) third_party/mavlink поруч із цим файлом — якщо є (збірка без інтернету);
+#   3) інакше завантажує з GitHub (FetchContent).
 #
 # Приклад крос-збірки для SSC30KQ (armv7l, Cortex-A7, hard-float):
 #   cmake -B build -DCMAKE_BUILD_TYPE=MinSizeRel \
 #         -DCMAKE_TOOLCHAIN_FILE=<ваш toolchain armv7 hard-float>
 #   cmake --build build
 cmake_minimum_required(VERSION 3.16)
-project(zr10_attitude VERSION 0.3.0 LANGUAGES CXX)
+project(zr10_attitude VERSION 0.3.8 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -23,6 +25,9 @@ set(MAVLINK_COMMIT 6a7760569ce6d46c56f93163703543d4345e940a)
 
 if(MAVLINK_DIR)
   set(ZR10_MAVLINK_INCLUDE ${MAVLINK_DIR})
+elseif(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/third_party/mavlink/ardupilotmega/mavlink.h)
+  set(ZR10_MAVLINK_INCLUDE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/mavlink)
+  message(STATUS "MAVLink: third_party/mavlink (вбудовані заголовки)")
 else()
   include(FetchContent)
   FetchContent_Declare(mavlink_c_library_v2
@@ -42,7 +47,7 @@ add_executable(zr10-attitude
   src/draw.cpp
   src/mav.cpp
   src/osd.cpp
-  src/overlay.cpp)
+  src/siyi.cpp)
 target_include_directories(zr10-attitude PRIVATE include)
 # -isystem: попередження з коду MAVLink не показуємо.
 target_include_directories(zr10-attitude SYSTEM PRIVATE ${ZR10_MAVLINK_INCLUDE})

@@ -1,15 +1,18 @@
-// main.cpp — плагін R2D2 для гімбала SIYI ZR10 (C++ версія).
-// Переклад головної частини plugin.py: отримує MAVLink-повідомлення 285
-// GIMBAL_DEVICE_ATTITUDE_STATUS, перетворює кватерніон у кути, пише журнал і
-// малює на OSD pitch/yaw/статус та індикатор напрямку камери.
-// Плагін нічого не шле на гімбал. REQUEST_RATE_HZ = 0 за замовчуванням.
+// main.cpp — плагін R2D2 для гімбала SIYI ZR10 (C++, 0.3.8).
+//
+// Що робить:
+//   * двічі на секунду питає ZR10 напряму (протокол SIYI, 37260, лише запит
+//     кутів 0x0D) і малює на відео оператора плашку: літачок, синє віяло
+//     напрямку камери, «ZR10 Pitch …» і «ZR10 Yaw …»;
+//   * читає з польотного контролера MAVLink 285 (кути, які контролер отримує
+//     від гімбала по UART) і порівнює з кутами гімбала — лише для журналу:
+//     «FC link lost», коли контролер повторює старі кути.
+// Плагін не керує ні гімбалом, ні апаратом.
 //
 // Запуск:  zr10-attitude [шлях/до/config.json]
-// Без аргументу config.json шукається поруч із програмою, потім /app/config.json.
+// Без аргументу config.json шукається у робочій теці (так його кладе R2D2 для
+// native-плагінів), поруч із програмою, потім /app/config.json.
 // Зупинка: Ctrl+C або SIGTERM — плагін прибирає свої елементи з екрана.
-//
-// Свідомі відмінності від Python-версії — див. PLAN.md (розділ «Свідомі
-// відмінності»). PYTHON_COMPAT=true у config.json вимикає їх (для перевірки).
 #include <chrono>
 #include <cmath>
 #include <csignal>
@@ -20,8 +23,10 @@
 #include "attitude.hpp"
 #include "config.hpp"
 #include "draw.hpp"
+#include "log.hpp"
 #include "mav.hpp"
 #include "osd.hpp"
+#include "siyi.hpp"
 
 #ifdef _WIN32
 #include <windows.h>  // SetConsoleOutputCP
@@ -29,11 +34,16 @@
 
 namespace {
 
-constexpr const char* VERSION = "0.3.1";
-constexpr const char* MESSAGE_TYPE = "GIMBAL_DEVICE_ATTITUDE_STATUS";
-constexpr int MESSAGE_ID = 285;
-constexpr double LOOP_SLEEP_S = 0.05;  // як у plugin.py
-constexpr double NO_DATA_S = 5.0;      // як у plugin.py
+constexpr const char* VERSION = "0.3.8";
+constexpr double LOOP_SLEEP_S = 0.05;
+constexpr double FC_STALE_S = 5.0;      // 285 від контролера старше — не порівнюємо
+constexpr double LOG_INTERVAL_S = 1.0;  // рядок журналу раз на секунду
+constexpr double OSD_RESEND_S = 5.0;    // незмінні елементи OSD — повтор раз на 5 с
+constexpr int SIYI_PORT = 37260;
+constexpr double SIYI_RATE_HZ = 2.0;
+// ArduPilot повертає yaw SIYI з протилежним знаком; на плашці yaw — як у 285
+// (0 — вперед, + — вправо). Перевірено на камері 2026-11-11.
+constexpr int SIYI_YAW_SIGN = -1;
 
 volatile std::sig_atomic_t g_stop = 0;
 void on_signal(int) { g_stop = 1; }
@@ -41,13 +51,6 @@ void on_signal(int) { g_stop = 1; }
 double now_s() {
     using namespace std::chrono;
     return duration<double>(steady_clock::now().time_since_epoch()).count();
-}
-
-// Число у вигляді, як його друкує Python repr (0.0, 2.0, 0.1, 1e-05).
-std::string py_repr(double v) {
-    std::string s;
-    zr10::Osd::append_number(s, v);
-    return s;
 }
 
 bool file_exists(const std::string& path) {
@@ -62,16 +65,15 @@ std::string dir_of(const std::string& path) {
     return slash == std::string::npos ? std::string() : path.substr(0, slash + 1);
 }
 
-// Останні дані гімбала (як змінні latest / sample_count / last_rx у plugin.py).
-struct State {
-    bool have_sample = false;
-    zr10::GimbalSample sample;  // yaw тут — для журналу (без округлення)
-    double heading = 0.0;       // напрямок для малювання
-    float q[4] = {0, 0, 0, 0};
-    const char* frame = "UNSPECIFIED";
+// Останні кути від польотного контролера (MAVLink 285) — для журналу.
+struct FcState {
+    bool have = false;
+    double heading = 0.0;  // 0 — вперед, + — вправо
+    double pitch = 0.0;
+    int flags = 0;
+    int failure = 0;
     unsigned long count = 0;
     double last_rx = -1.0;
-    const char* callback_error = nullptr;
 };
 
 }  // namespace
@@ -89,172 +91,120 @@ int main(int argc, char** argv) {
         config_path = argv[1];
     } else {
         const std::string near_exe = dir_of(argv[0]) + "config.json";
-        if (file_exists(near_exe)) config_path = near_exe;
+        if (file_exists("config.json")) config_path = "./config.json";
+        else if (file_exists(near_exe)) config_path = near_exe;
         else if (file_exists("/app/config.json")) config_path = "/app/config.json";
     }
     zr10::Config cfg;
     const bool config_ok = !config_path.empty() && cfg.load_file(config_path);
     const zr10::PluginSettings s = zr10::settings_from_config(cfg);
 
-    zr10::DrawSettings draw_settings;
-    draw_settings.x = s.x;
-    draw_settings.y = s.y;
-    draw_settings.dy = s.dy;
-    draw_settings.size = s.size;
-    draw_settings.yaw_widget_x = s.yaw_widget_x;
-    draw_settings.yaw_widget_y = s.yaw_widget_y;
-    draw_settings.yaw_widget_scale = s.yaw_widget_scale;
-    draw_settings.yaw_style = s.python_compat        ? zr10::YawStyle::Python
-                              : s.yaw_style == "line"  ? zr10::YawStyle::Line
-                              : s.yaw_style == "arrow" ? zr10::YawStyle::Arrow
-                              : s.yaw_style == "arrow_base" ? zr10::YawStyle::ArrowBase
-                              : s.yaw_style == "triangle" ? zr10::YawStyle::Triangle
-                              : s.yaw_style == "fan"   ? zr10::YawStyle::Fan
-                                                       : zr10::YawStyle::Sector;  // 0.3.1
-    draw_settings.panel = s.panel;  // плашка, 2026-10-28
-    draw_settings.panel_alpha = static_cast<int>(s.panel_alpha);
-    draw_settings.panel_w = s.panel_w;
-    draw_settings.plane_image = s.plane_image;
-    draw_settings.panel_image = s.panel_image;
-    draw_settings.panel_pos = s.panel_pos == "bottom_left" ? zr10::PanelPos::BottomLeft
-                              : s.panel_pos == "top_right" ? zr10::PanelPos::TopRight
-                              : s.panel_pos == "top_left"  ? zr10::PanelPos::TopLeft
-                              : s.panel_pos == "xy"        ? zr10::PanelPos::XY
-                                                           : zr10::PanelPos::BottomRight;
-
-    std::printf("INFO: zr10-attitude-test starting connect=%s gimbal_id=%lld draw=%s "
-                "request_rate_hz=%s\n",
-                s.connect.c_str(), s.gimbal_id, s.draw ? "True" : "False",
-                py_repr(s.request_rate_hz).c_str());
-    std::printf("INFO: C++ version %s config=%s osd_only_changes=%s osd_resend_s=%s "
-                "log_interval_s=%s python_compat=%s yaw_style=%s panel=%s panel_alpha=%lld "
-                "panel_w=%s panel_pos=%s plane_image=%s panel_image=%s\n",
-                VERSION,
+    std::printf("INFO: zr10-attitude %s config=%s connect=%s gimbal_id=%lld cam=%s siyi=%s\n", VERSION,
                 config_ok ? config_path.c_str()
-                          : (config_path.empty() ? "(not found, defaults)"
-                                                 : "(unreadable, defaults)"),
-                s.osd_only_changes ? "True" : "False", py_repr(s.osd_resend_s).c_str(),
-                py_repr(s.log_interval_s).c_str(), s.python_compat ? "True" : "False",
-                s.python_compat ? "python" : s.yaw_style.c_str(), s.panel ? "True" : "False",
-                s.panel_alpha, py_repr(s.panel_w).c_str(), s.panel_pos.c_str(),
-                s.plane_image.empty() ? "(lines)" : s.plane_image.c_str(),
-                s.panel_image.empty() ? "(rect)" : s.panel_image.c_str());
+                          : (config_path.empty() ? "(not found, defaults)" : "(unreadable, defaults)"),
+                s.connect.c_str(), s.gimbal_id,
+                s.cam == zr10::PluginSettings::NO_CAM ? "(all)" : std::to_string(s.cam).c_str(),
+                s.siyi_ip.empty() ? "(off)" : (s.siyi_ip + ":" + std::to_string(SIYI_PORT)).c_str());
     std::fflush(stdout);
 
-    // ---- MAVLink і OSD ----
-    zr10::Mav mav(s.connect, 255, 0, 1.0, 1, 1, /*debug=*/true);  // debug=True, як у plugin.py
-    State st;
+    // ---- MAVLink (лише читання 285 для журналу) ----
+    zr10::Mav mav(s.connect, 255, 0, 1.0, 1, 1, /*debug=*/true);
+    FcState fc;
     mav.on_gimbal([&](const zr10::GimbalAttitude& g) {
-        // Як on_gimbal() у plugin.py.
         if (static_cast<long long>(g.gimbal_device_id) != s.gimbal_id) return;
         zr10::Euler e;
-        if (!zr10::quat_to_euler_deg(g.q, e)) {
-            st.callback_error = "ValueError";  // як type(exc).__name__ у Python
-            return;
-        }
-        double heading = e.yaw;
-        if (!s.python_compat) zr10::camera_heading_deg(g.q, heading);  // рішення 2026-10-22
-        st.sample.id = g.gimbal_device_id;
-        st.sample.flags = g.flags;
-        st.sample.failure = static_cast<int>(g.failure_flags);
-        st.sample.roll = e.roll;
-        st.sample.pitch = e.pitch;
-        st.sample.yaw = heading;
-        st.heading = heading;
-        st.frame = zr10::yaw_frame(g.flags);
-        for (int i = 0; i < 4; ++i) st.q[i] = g.q[i];
-        st.have_sample = true;
-        ++st.count;
-        st.last_rx = now_s();
+        double heading = 0.0;
+        if (!zr10::quat_to_euler_deg(g.q, e) || !zr10::camera_heading_deg(g.q, heading)) return;
+        fc.heading = heading;
+        fc.pitch = e.pitch;
+        fc.flags = g.flags;
+        fc.failure = static_cast<int>(g.failure_flags);
+        fc.have = true;
+        ++fc.count;
+        fc.last_rx = now_s();
     });
-    mav.start();  // якщо не вдалося — журнал уже має ERROR; плагін не падає
+    mav.start();  // якщо не вдалося — у журналі ERROR; плагін працює далі
 
-    zr10::Osd* osd = nullptr;
-    zr10::Osd osd_instance;  // 127.0.0.1:14777, як R2Draw()
-    if (s.draw) {
-        osd = &osd_instance;
-        if (s.osd_only_changes) osd->set_only_changes(true, s.osd_resend_s);
-        zr10::clear_unused_elements(*osd, draw_settings);
+    // ---- OSD ----
+    zr10::Osd osd;  // 127.0.0.1:14777
+    osd.set_only_changes(true, OSD_RESEND_S);
+    if (s.cam != zr10::PluginSettings::NO_CAM) osd.set_cam(s.cam);
+    {
+        // Що R2D2 каже про себе і свої камери (для CAM).
+        std::string pong = osd.ping(0.5);
+        if (pong.size() > 1500) pong = pong.substr(0, 1500) + "...";
+        std::printf("INFO: OSD pong: %s\n", pong.empty() ? "(no answer)" : pong.c_str());
+        std::fflush(stdout);
     }
+    zr10::clear_legacy_elements(osd);
 
-    if (s.request_rate_hz > 0.0) {
-        mav.set_message_interval(MESSAGE_ID, s.request_rate_hz);
-        std::printf("INFO: requested message_id=%d rate_hz=%s\n", MESSAGE_ID,
-                    py_repr(s.request_rate_hz).c_str());
-    }
+    // ---- гімбал напряму ----
+    zr10::SiyiReader siyi(s.siyi_ip, SIYI_PORT, SIYI_RATE_HZ);
+    zr10::FcLinkCheck fc_check(SIYI_YAW_SIGN);
 
-    unsigned long last_printed = 0, last_drawn = 0;
-    bool drawn_once = false, last_stale = false, warned_no_data = false;
-    double last_log = -1e9, last_draw_t = -1e9;
-    const double started_at = now_s();
-
-    std::printf("INFO: waiting for %s id=%d\n", MESSAGE_TYPE, MESSAGE_ID);
-    std::fflush(stdout);
+    bool drawn_once = false, last_have = false;
+    unsigned long last_drawn = 0;
+    double last_draw_t = -1e9, last_log = -1e9;
 
     while (!g_stop) {
-        mav.poll();  // тут викликається колбек on_gimbal для нових 285
-
+        mav.poll();  // тут викликається on_gimbal для нових 285
         const double now = now_s();
-        const double age = st.last_rx >= 0.0 ? now - st.last_rx : now - started_at;
-        const bool stale = age > NO_DATA_S;
 
-        if (st.count != last_printed && st.have_sample) {
-            warned_no_data = false;
-            if (s.log_interval_s <= 0.0 || now - last_log >= s.log_interval_s) {
-                std::printf("INFO: gimbal285 n=%lu id=%d flags=%d frame=%s failure=%d "
-                            "roll_deg=%.6f pitch_deg=%.6f yaw_body_deg=%.6f\n",
-                            st.count, st.sample.id, st.sample.flags, st.frame,
-                            st.sample.failure, st.sample.roll, st.sample.pitch, st.sample.yaw);
-                std::printf("DEBUG: gimbal285 q=(%s, %s, %s, %s)\n",
-                            py_repr(st.q[0]).c_str(), py_repr(st.q[1]).c_str(),
-                            py_repr(st.q[2]).c_str(), py_repr(st.q[3]).c_str());
-                std::fflush(stdout);
-                last_printed = st.count;
-                last_log = now;
-            }
+        if (siyi.poll(now)) {
+            if (siyi.state() == zr10::SiyiState::Ok)
+                zr10::log_line("siyi", "INFO", "gimbal %s replies (yaw=%.1f pitch=%.1f)", siyi.ip().c_str(),
+                               siyi.yaw(), siyi.pitch());
+            else if (siyi.state() == zr10::SiyiState::Lost)
+                zr10::log_line("siyi", "WARNING", "gimbal %s: no reply for %.0f s", siyi.ip().c_str(),
+                               zr10::SiyiReader::LOST_S);
+        }
+        const bool siyi_ok = siyi.state() == zr10::SiyiState::Ok;
+        const bool fc_fresh = fc.have && now - fc.last_rx <= FC_STALE_S;
+
+        // Порівняння кутів контролера з кутами гімбала — лише журнал.
+        if (fc_check.update(now, fc_fresh, fc.heading, fc.pitch, siyi_ok, siyi.yaw(), siyi.pitch(),
+                            siyi.last_motion() < zr10::FcLinkCheck::STILL_DEG)) {
+            if (fc_check.lost())
+                zr10::log_line("siyi", "WARNING",
+                               "FC link lost: flight controller angles differ from gimbal "
+                               "(yaw diff %.1f, pitch diff %.1f)",
+                               fc_check.yaw_diff(), fc_check.pitch_diff());
+            else if (siyi_ok && fc_fresh)
+                zr10::log_line("siyi", "INFO", "FC link ok: angles match again");
+            else
+                zr10::log_line("siyi", "INFO", "FC link check paused: no data");
+        }
+        if (now - last_log >= LOG_INTERVAL_S) {
+            last_log = now;
+            std::printf("INFO: gimbal state=%s yaw=%.1f pitch=%.1f | fc %s yaw=%.1f pitch=%.1f n=%lu | "
+                        "diff yaw=%.1f pitch=%.1f moving=%.1f fc_link=%s req=%lu rep=%lu\n",
+                        zr10::siyi_state_name(siyi.state()), SIYI_YAW_SIGN * siyi.yaw(), siyi.pitch(),
+                        fc_fresh ? "ok" : (fc.have ? "stale" : "none"), fc.heading, fc.pitch, fc.count,
+                        fc_check.yaw_diff(), fc_check.pitch_diff(), siyi.last_motion(),
+                        fc_check.lost() ? "LOST" : "ok", siyi.requests(), siyi.replies());
+            std::fflush(stdout);
         }
 
-        if (st.callback_error != nullptr) {
-            std::fprintf(stderr, "ERROR: gimbal285 callback failed: %s\n", st.callback_error);
-            std::fflush(stderr);
-            st.callback_error = nullptr;
-        }
-
-        if (stale && !warned_no_data) {
-            const auto& stats = mav.stats();
-            std::fprintf(stderr,
-                         "WARNING: no selected gimbal285 for %.1fs rx_total=%lu rx_bad=%lu "
-                         "rx_errors=%lu gimbal285=%lu\n",
-                         age, stats.rx_total, stats.rx_bad, stats.rx_errors,
-                         mav.count_of(MESSAGE_ID));
-            std::fflush(stderr);
-            warned_no_data = true;
-        }
-
-        if (osd != nullptr) {
-            const bool changed = !drawn_once || st.count != last_drawn || stale != last_stale;
-            // Повтор для надійності: навіть без нових даних раз на OSD_RESEND_S
-            // віддаємо кадр модулю OSD (він сам надішле лише те, що пора повторити).
-            const bool resend_due = s.osd_only_changes && now - last_draw_t >= s.osd_resend_s;
-            if (changed || resend_due) {
-                zr10::GimbalSample shown = st.sample;
-                if (!s.python_compat) shown.yaw = std::round(st.heading * 10.0) / 10.0;
-                zr10::draw_sample(*osd, st.have_sample ? &shown : nullptr, stale, draw_settings);
-                drawn_once = true;
-                last_drawn = st.count;
-                last_stale = stale;
-                last_draw_t = now;
-            }
+        // Плашка: кути з гімбала; не відповідає 3 с (або ще не відповів) — «--».
+        const bool have = siyi.have_angles() && siyi_ok;
+        const bool changed = !drawn_once || have != last_have || (have && siyi.replies() != last_drawn);
+        const bool resend_due = now - last_draw_t >= OSD_RESEND_S;
+        if (changed || resend_due) {
+            zr10::ShownAngles a;
+            a.pitch = siyi.pitch();
+            a.yaw = std::round(SIYI_YAW_SIGN * siyi.yaw() * 10.0) / 10.0;
+            zr10::draw_panel(osd, have ? &a : nullptr);
+            drawn_once = true;
+            last_have = have;
+            last_drawn = siyi.replies();
+            last_draw_t = now;
         }
 
         std::this_thread::sleep_for(std::chrono::duration<double>(LOOP_SLEEP_S));
     }
 
-    // ---- як блок finally у plugin.py ----
-    if (osd != nullptr) {
-        zr10::clear_plugin_elements(*osd, draw_settings.yaw_style);
-        osd->close();
-    }
+    zr10::clear_plugin_elements(osd);
+    osd.close();
     mav.stop();
     return 0;
 }

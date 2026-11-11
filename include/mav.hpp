@@ -1,7 +1,7 @@
 // mav.hpp — MAVLink-з'єднання з R2D2.
 // Переклад потрібної плагіну частини api/r2mav.py: підключення по UDP,
 // HEARTBEAT раз на секунду, прийом повідомлень, фільтр HEARTBEAT від
-// автопілота, лічильники для діагностики, MAV_CMD_SET_MESSAGE_INTERVAL.
+// автопілота, лічильники для діагностики. Команд контролеру не надсилає.
 //
 // Відмінність від Python: тут немає окремого потоку прийому. Головний цикл
 // плагіна викликає poll() кожні 50 мс, і poll() забирає всі пакети, що
@@ -71,9 +71,6 @@ public:
         gimbal_cb_ = std::move(callback);
     }
 
-    // Попросити автопілот слати повідомлення msg_id з частотою rate_hz
-    // (rate_hz <= 0 — повернути частоту за замовчуванням). Як у r2mav.py.
-    void set_message_interval(std::uint32_t msg_id, double rate_hz);
 
     const Stats& stats() const { return stats_; }
     unsigned long count_of(std::uint32_t msg_id) const;

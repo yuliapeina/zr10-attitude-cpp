@@ -139,19 +139,6 @@ void Mav::send_heartbeat() {
     ++stats_.hb_sent;
 }
 
-void Mav::set_message_interval(std::uint32_t msg_id, double rate_hz) {
-    if (sock_ < 0) return;
-    // Як у r2mav.py: інтервал у мікросекундах, -1 = частота за замовчуванням.
-    const long interval_us = rate_hz > 0.0 ? static_cast<long>(1e6 / rate_hz) : -1;
-    mavlink_message_t msg;
-    mavlink_msg_command_long_pack_chan(source_system_, source_component_, TX_CHAN, &msg,
-                                       ap_system_, ap_component_,
-                                       MAV_CMD_SET_MESSAGE_INTERVAL, 0,
-                                       static_cast<float>(msg_id),
-                                       static_cast<float>(interval_us), 0, 0, 0, 0, 0);
-    send_message(&msg);
-}
-
 void Mav::poll() {
     if (!running_) return;
     const double now = now_s();

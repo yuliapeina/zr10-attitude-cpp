@@ -410,63 +410,23 @@ std::string Config::get_string(const std::string& key, const std::string& fallba
 PluginSettings settings_from_config(const Config& cfg) {
     PluginSettings s;
     s.connect = cfg.get_string("CONNECT", s.connect);
-    s.gimbal_id = cfg.get_int("GIMBAL_ID", 1);
-    s.draw = cfg.get_bool("DRAW", true);
-    s.x = cfg.get_float("X", 0.03);
-    s.y = cfg.get_float("Y", 0.04);
-    s.dy = cfg.get_float("DY", 0.05);
-    s.size = cfg.get_float("SIZE", 0.03);
-    s.yaw_widget_x = cfg.get_float("YAW_WIDGET_X", 0.16);
-    s.yaw_widget_y = cfg.get_float("YAW_WIDGET_Y", 0.43);
-    s.yaw_widget_scale = std::max(0.5, cfg.get_float("YAW_WIDGET_SCALE", 1.0));
-    s.request_rate_hz = std::max(0.0, cfg.get_float("REQUEST_RATE_HZ", 0.0));
-
-    s.python_compat = cfg.get_bool("PYTHON_COMPAT", false);
+    // Порожній CONNECT (буває у згенерованих конфігах) — стандартна адреса.
+    if (s.connect.find_first_not_of(" \t") == std::string::npos) s.connect = PluginSettings().connect;
+    s.gimbal_id = cfg.get_int("GIMBAL_ID", s.gimbal_id);
     {
-        std::string style = strip_lower(cfg.get_string("YAW_STYLE", "sector"));
-        s.yaw_style = (style == "line" || style == "arrow" || style == "arrow_base" ||
-                       style == "triangle" || style == "fan")
-                          ? style
-                          : "sector";  // 0.3.1: немає або невідоме → "sector"
-    }
-    s.panel = cfg.get_bool("PANEL", true);
-    s.panel_alpha = std::min(255LL, std::max(0LL, cfg.get_int("PANEL_ALPHA", 115)));
-    s.panel_w = cfg.get_float("PANEL_W", 0.24);
-    {
-        const std::string pos = strip_lower(cfg.get_string("PANEL_POS", "bottom_right"));
-        s.panel_pos = (pos == "bottom_left" || pos == "top_right" || pos == "top_left" ||
-                       pos == "xy")
-                          ? pos
-                          : "bottom_right";  // невідоме значення → правий нижній кут
-    }
-    if (!(s.panel_w >= 0.05 && s.panel_w <= 1.0)) s.panel_w = 0.24;
-    s.plane_image = cfg.get_string("PLANE_IMAGE", "airplane");
-    {
-        // Лише безпечні символи: назва йде в JSON як є.
-        std::string clean;
-        for (char ch : s.plane_image)
-            if (std::isalnum(static_cast<unsigned char>(ch)) || ch == '_' || ch == '-' || ch == '.')
-                clean += ch;
-        if (clean.size() > 4 && clean.compare(clean.size() - 4, 4, ".png") == 0)
-            clean.erase(clean.size() - 4);  // "airplane.png" → "airplane"
-        s.plane_image = clean;
+        const long long c = cfg.get_int("CAM", PluginSettings::NO_CAM);
+        s.cam = (c >= -1 && c <= 31) ? static_cast<int>(c) : PluginSettings::NO_CAM;
     }
     {
-        std::string raw = cfg.get_string("PANEL_IMAGE", "ui-tile"), clean;
-        for (char ch : raw)
-            if (std::isalnum(static_cast<unsigned char>(ch)) || ch == '_' || ch == '-' || ch == '.')
-                clean += ch;
-        if (clean.size() > 4 && clean.compare(clean.size() - 4, 4, ".png") == 0)
-            clean.erase(clean.size() - 4);
-        s.panel_image = clean;
-    }
-    s.osd_only_changes = cfg.get_bool("OSD_ONLY_CHANGES", true);
-    s.osd_resend_s = cfg.get_float("OSD_RESEND_S", 5.0);
-    if (!(s.osd_resend_s >= 0.5)) s.osd_resend_s = 5.0;  // захист від 0 і від'ємних
-    s.log_interval_s = std::max(0.0, cfg.get_float("LOG_INTERVAL_S", 1.0));
-    if (s.python_compat) {
-        s.osd_only_changes = false;
-        s.log_interval_s = 0.0;
+        // "" — вимкнено; інше — лише цифри й крапки (IPv4), інакше за замовч.
+        std::string ip = cfg.get_string("SIYI_IP", s.siyi_ip);
+        const auto b = ip.find_first_not_of(" \t");
+        const auto e = ip.find_last_not_of(" \t");
+        ip = b == std::string::npos ? std::string() : ip.substr(b, e - b + 1);
+        bool ok = ip.size() <= 15;
+        for (char ch : ip)
+            if (!((ch >= '0' && ch <= '9') || ch == '.')) ok = false;
+        if (ok) s.siyi_ip = ip;
     }
     return s;
 }

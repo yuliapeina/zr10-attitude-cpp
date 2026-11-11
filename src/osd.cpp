@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <thread>
 
 #include "net.hpp"
 
@@ -189,7 +190,7 @@ void Osd::end_batch() {
 
 void Osd::flush() {
     if (pending_.empty()) return;
-    std::string payload = "{\"rects\": [";
+    std::string payload = rects_prefix();
     for (size_t i = 0; i < pending_.size(); ++i) {
         if (i) payload += ", ";
         payload += pending_[i];
@@ -220,8 +221,35 @@ void Osd::emit(const std::string& id, std::string element_json, bool is_clear) {
     if (batch_depth_ > 0) {
         pending_.push_back(std::move(element_json));
     } else {
-        send("{\"rects\": [" + element_json + "]}");
+        send(rects_prefix() + element_json + "]}");
     }
+}
+
+std::string Osd::rects_prefix() const {
+    if (cam_ == NO_CAM) return "{\"rects\": [";
+    return "{\"cam\": " + std::to_string(cam_) + ", \"rects\": [";
+}
+
+std::string Osd::ping(double timeout_s) {
+    if (sink_ || sock_ < 0) return std::string();
+    net::set_nonblocking(sock_);
+    sockaddr_in to;
+    std::memcpy(&to, addr_, sizeof(to));
+    static const char kPing[] = "{\"ping\":true}";
+    if (!net::send_to(sock_, kPing, static_cast<int>(sizeof(kPing) - 1), to)) return std::string();
+    const double deadline = now() + timeout_s;
+    char buf[4096];
+    while (now() < deadline) {
+        sockaddr_in from;
+        const int n = net::recv_from(sock_, buf, sizeof(buf) - 1, from);
+        if (n > 0) {
+            buf[n] = 0;
+            if (std::strstr(buf, "pong") != nullptr) return std::string(buf, static_cast<size_t>(n));
+        } else {
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+    }
+    return std::string();
 }
 
 void Osd::send(const std::string& payload) {

@@ -82,6 +82,18 @@ public:
     // загубив пакет. Пакет, у якому нічого не змінилось, не надсилається зовсім.
     // Вимкнено (за замовчуванням у класі) — усе як у r2draw.py.
     void set_only_changes(bool enabled, double resend_s = 5.0);
+
+    // 0.3.4: камера, на якій малювати (номер як у R2D2_shm<N>; -1 — усі).
+    // Додається як "cam" поруч із "rects" у КОЖНОМУ повідомленні, як
+    // R2Draw(cam=N) у r2draw.py. NO_CAM — поля немає (малюється на всіх
+    // камерах, як до 0.3.4).
+    static constexpr int NO_CAM = -1000;
+    void set_cam(int cam) { cam_ = cam; }
+    int cam() const { return cam_; }
+
+    // 0.3.4: спитати модуль OSD {"ping":true} і повернути відповідь (pong з
+    // переліком камер "cams") або "" за timeout_s. Лише для журналу.
+    std::string ping(double timeout_s);
     bool only_changes() const { return only_changes_; }
 
     // Джерело часу в секундах (для тестів). За замовчуванням — монотонний годинник.
@@ -158,6 +170,8 @@ private:
     void send(const std::string& payload);
 
     int sock_ = -1;
+    int cam_ = NO_CAM;
+    std::string rects_prefix() const;
     std::function<void(const std::string&)> sink_;
     unsigned char addr_[16] = {};  // sockaddr_in, щоб не тягнути заголовки сюди
     int batch_depth_ = 0;
